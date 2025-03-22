@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>cm4git Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script type="module" src="/main.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #2d2d2d;
+    }
+    ::-webkit-scrollbar-thumb {
+      background-color: #6366f1;
+      border-radius: 10px;
+      border: 2px solid transparent;
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: #818cf8;
+    }
+  </style>
+</head>
+<body class="bg-gray-900 text-white">
+  <div class="p-4">
+    <h1 class="text-2xl font-bold mb-4">cm4git Dashboard</h1>
+    <div id="dashboard" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- KPI cards will be injected here -->
+    </div>
+  </div>
+</body>
+</html>
