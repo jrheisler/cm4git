@@ -32,6 +32,8 @@ window.addEventListener('DOMContentLoaded', () => {
           <option value="today">Today</option>
           <option value="this_week" selected>This Week</option>
           <option value="this_month">This Month</option>
+          <option value="this_year">This Year</option>
+          <option value="last_year">Last Year</option>
         </select>
       </label>
       <label class="block mb-2 text-sm">Category
@@ -56,11 +58,22 @@ window.addEventListener('DOMContentLoaded', () => {
   function getSinceDate(range) {
     const now = new Date();
     let since = new Date();
-    if (range === "today") since.setHours(0, 0, 0, 0);
-    else if (range === "this_week") since.setDate(now.getDate() - 7);
-    else if (range === "this_month") since.setMonth(now.getMonth() - 1);
+  
+    if (range === "today") {
+      since.setHours(0, 0, 0, 0);
+    } else if (range === "this_week") {
+      since.setDate(now.getDate() - 7);
+    } else if (range === "this_month") {
+      since.setMonth(now.getMonth() - 1);
+    } else if (range === "this_year") {
+      since = new Date(now.getFullYear(), 0, 1); // January 1st of current year
+    } else if (range === "last_year") {
+      since = new Date(now.getFullYear() - 1, 0, 1); // January 1st of last year
+    }
+  
     return since.toISOString();
   }
+  
 
   async function loadCommits(index) {
     const box = config.boxes[index];
