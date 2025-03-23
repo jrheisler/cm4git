@@ -3,13 +3,22 @@ window.addEventListener('DOMContentLoaded', () => {
   const defaultBoxTemplates = [
     { title: "Avg PR Merge Time", category: "pr_merge_time", range: "this_week", graph: "line" },
     { title: "Avg Time to Close", category: "issue_resolution", range: "this_year", graph: "line" },
+    { title: "Branch Activity", category: "branch_activity", range: "this_year", graph: "bar" },
+    { title: "Branch Divergence", category: "branch_divergence", range: "this_year", graph: "bar" },
+    { title: "Branches by Type", category: "branch_type_breakdown", range: "this_year", graph: "bar" },
     { title: "Code Churn (Files Changed)", category: "code_churn", range: "this_year", graph: "line" },
     { title: "Commits", category: "commits", range: "this_year", graph: "line" },
-    { title: "Commits by Contributor", category: "contributors", range: "this_year", graph: "doughnut" },
+    { title: "Commits by Contributor", category: "contributors", range: "this_year", graph: "line" },
     { title: "Comments Over Time", category: "comments_over_time", range: "this_year", graph: "line" },
+    { title: "Inactive Issues", category: "inactive_issues", range: "this_year", graph: "line" },
     { title: "Issues Over Time", category: "issues", range: "this_year", graph: "line" },
+    { title: "Lead Time for Changes", category: "lead_time", range: "this_year", graph: "line" },
+    { title: "Lines Added vs Deleted", category: "loc_change", range: "this_year", graph: "line" },
+    { title: "Most Active Days", category: "most_active_days", range: "this_year", graph: "bar" },
+    { title: "Most Changed Files", category: "most_changed_files", range: "this_year", graph: "bar" },
     { title: "New vs Closed Issues", category: "issue_compare", range: "this_year", graph: "bar" },
     { title: "Open vs Close PR", category: "pull_requests", range: "this_year", graph: "doughnut" },
+    { title: "PR Rejection Rate", category: "pr_rejection_rate", range: "this_year", graph: "bar" },
     { title: "Release Frequency", category: "release_frequency", range: "last_year", graph: "bar" }
   ];
   
@@ -43,6 +52,81 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   });
   
+  const importBtn = document.createElement('button');
+  importBtn.id = "importBtn";
+  importBtn.className = "mb-4 ml-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded";
+  importBtn.textContent = "📥";
+  importBtn.title = 'Import';
+  
+  const exportBtn = document.createElement('button');
+  exportBtn.id = "exportBtn";
+  exportBtn.className = "mb-4 ml-2 px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded";
+  exportBtn.textContent = "📤";
+  exportBtn.title = 'Export';
+  dashboard.parentNode.insertBefore(importBtn, dashboard);
+  dashboard.parentNode.insertBefore(exportBtn, dashboard);
+
+  const helpBtn = document.createElement('button');
+  helpBtn.innerHTML = '❓';
+  helpBtn.title = 'About this app';
+  helpBtn.className = "mb-4 ml-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-full text-sm";
+  helpBtn.onclick = () => document.getElementById('aboutModal').classList.remove('hidden');
+  dashboard.parentNode.insertBefore(helpBtn, dashboard);
+
+  document.getElementById('printBtn')?.addEventListener('click', printAboutContent);
+
+  document.getElementById('exportBtn').addEventListener('click', () => {
+    const exportData = JSON.stringify(config, null, 2);
+    const blob = new Blob([exportData], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+  
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'boxes.json';
+    a.click();
+  
+    URL.revokeObjectURL(url);
+  });
+  document.getElementById('importBtn').addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+  
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+  
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const importedConfig = JSON.parse(event.target.result);
+  
+          if (!importedConfig.boxes || !Array.isArray(importedConfig.boxes)) {
+            alert("Invalid JSON format");
+            return;
+          }
+  
+          config = importedConfig;
+          localStorage.setItem('cm4git_config', JSON.stringify(config));
+  
+          // Clear existing dashboard and reload boxes
+          dashboard.innerHTML = "";
+          config.boxes.forEach((_, index) => renderBox(index));
+          config.boxes.forEach((_, index) => refreshBox(index));
+          showToast("🎉 Boxes imported successfully!", "success");
+        } catch (err) {
+          alert("Failed to import JSON file.");
+          console.error(err);
+        }
+      };
+  
+      reader.readAsText(file);
+    };
+  
+    input.click();
+  });
+      
+
   const modal = document.createElement('div');
   modal.id = "editorModal";
   modal.className = "fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50 px-2 py-5 hidden";
@@ -68,6 +152,9 @@ window.addEventListener('DOMContentLoaded', () => {
         <select id="boxCategory" class="w-full p-1 bg-gray-900 text-white border border-gray-700 rounded mt-1 text-sm">
           <option value="pr_merge_time">Avg PR Merge Time</option>  
           <option value="issue_resolution">Avg Time to Close Issues</option>
+          <option value="branch_activity">Branch Activity</option>
+          <option value="branch_divergence">Branch Divergence</option>
+          <option value="branch_type_breakdown">Branches by Type</option>
           <option value="code_churn">Code Churn (Files Changed)</option>  
           <option value="comments_over_time">Comments Over Time</option>
           <option value="contributors">Commits by Contributor</option>
@@ -173,6 +260,152 @@ window.addEventListener('DOMContentLoaded', () => {
               display: true,
               text: "Changes"
             }
+          }
+        }
+      }
+    });
+  }
+
+  async function loadBranchDivergence(index) {
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const branchesUrl = `https://api.github.com/repos/${box.repo}/branches`;
+  
+    const branchResp = await fetch(branchesUrl, { headers });
+    const branches = await branchResp.json();
+  
+    if (!Array.isArray(branches)) {
+      console.error("GitHub API error:", branches);
+      return;
+    }
+  
+    const mainBranch = "main"; // could be configurable later
+    const divergenceData = [];
+  
+    for (const branch of branches) {
+      if (branch.name === mainBranch) continue;
+  
+      try {
+        const compareUrl = `https://api.github.com/repos/${box.repo}/compare/${mainBranch}...${branch.name}`;
+        const compareResp = await fetch(compareUrl, { headers });
+        const compare = await compareResp.json();
+  
+        if (compare.ahead_by != null && compare.behind_by != null) {
+          divergenceData.push({
+            branch: branch.name,
+            ahead: compare.ahead_by,
+            behind: compare.behind_by
+          });
+        }
+      } catch (err) {
+        console.warn(`Could not compare ${branch.name} with ${mainBranch}`, err);
+      }
+    }
+  
+    const labels = divergenceData.map(d => d.branch);
+    const aheadData = divergenceData.map(d => d.ahead);
+    const behindData = divergenceData.map(d => d.behind);
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Commits Ahead",
+            data: aheadData,
+            backgroundColor: "#60a5fa" // Tailwind blue-400
+          },
+          {
+            label: "Commits Behind",
+            data: behindData,
+            backgroundColor: "#f87171" // Tailwind red-400
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: {
+            callbacks: {
+              label: function(ctx) {
+                const label = ctx.dataset.label || "";
+                return `${label}: ${ctx.raw} commits`;
+              }
+            }
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "Commit Count" }
+          }
+        }
+      }
+    });
+  }
+  
+
+  async function loadBranchActivity(index) {
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/branches`;
+  
+    const response = await fetch(url, { headers });
+    const branches = await response.json();
+  
+    if (!Array.isArray(branches)) {
+      console.error("GitHub API returned error:", branches);
+      return;
+    }
+  
+    const now = new Date();
+    const THIRTY_DAYS = 1000 * 60 * 60 * 24 * 30;
+  
+    let active = 0;
+    let inactive = 0;
+  
+    for (const branch of branches) {
+      try {
+        const commitUrl = branch.commit.url;
+        const commitResp = await fetch(commitUrl, { headers });
+        const commitData = await commitResp.json();
+  
+        const commitDate = new Date(commitData.commit.author.date);
+        const age = now - commitDate;
+  
+        if (age <= THIRTY_DAYS) active++;
+        else inactive++;
+      } catch (e) {
+        console.warn(`Error fetching commit for branch ${branch.name}:`, e);
+      }
+    }
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels: ["Active (<30d)", "Inactive (>30d)"],
+        datasets: [{
+          label: 'Branches',
+          data: [active, inactive],
+          backgroundColor: ['#34d399', '#f87171'], // green, red
+          borderColor: ['#059669', '#dc2626'],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "Branch Count" }
           }
         }
       }
@@ -837,22 +1070,38 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
   
-  async function loadContributors(index) {    
+  async function loadContributors(index) {
     const box = config.boxes[index];
     const headers = box.token ? { Authorization: `token ${box.token}` } : {};
     const url = `https://api.github.com/repos/${box.repo}/stats/contributors`;
-    const response = await fetch(url, { headers });
-    const contributors = await response.json();
   
-    if (!Array.isArray(contributors)) {
-      console.error("Unexpected response:", contributors);
+    let contributors = null;
+    let attempts = 0;
+    const maxAttempts = 5;
+  
+    while (attempts < maxAttempts) {
+      const response = await fetch(url, { headers });
+      const data = await response.json();
+  
+      if (Array.isArray(data)) {
+        contributors = data;
+        break;
+      }
+  
+      attempts++;
+      await new Promise(res => setTimeout(res, 2000)); // wait 2 seconds before retry
+    }
+  
+    if (!contributors) {
+      console.error("Contributor stats not ready after retries");
+      showToast("❌ Contributor data not available yet. Try again later.", "error");
       return;
     }
   
     const labels = contributors.map(c => c.author.login);
     const data = contributors.map(c => c.total);
     const canvasId = `chart_${index}`;
-  
+    
     if (charts[canvasId]) charts[canvasId].destroy();
   
     charts[canvasId] = new Chart(document.getElementById(canvasId), {
@@ -875,6 +1124,7 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+  
   
   async function loadCommits(index) {
     const box = config.boxes[index];
@@ -1109,7 +1359,79 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+  async function loadBranchTypeBreakdown(index) {
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/branches?per_page=100`;
   
+    const response = await fetch(url, { headers });
+    const branches = await response.json();
+  
+    if (!Array.isArray(branches)) {
+      console.error("GitHub API error:", branches);
+      return;
+    }
+  
+    const typeCounts = {
+      feature: 0,
+      bugfix: 0,
+      hotfix: 0,
+      release: 0,
+      test: 0,
+      chore: 0,
+      other: 0
+    };
+  
+    for (const branch of branches) {
+      const name = branch.name.toLowerCase();
+      if (name.startsWith("feature/")) typeCounts.feature++;
+      else if (name.startsWith("bugfix/")) typeCounts.bugfix++;
+      else if (name.startsWith("hotfix/")) typeCounts.hotfix++;
+      else if (name.startsWith("release/")) typeCounts.release++;
+      else if (name.startsWith("test/")) typeCounts.test++;
+      else if (name.startsWith("chore/")) typeCounts.chore++;
+      else typeCounts.other++;
+    }
+  
+    const labels = Object.keys(typeCounts);
+    const data = labels.map(type => typeCounts[type]);
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph === "doughnut" ? "doughnut" : "bar",
+      data: {
+        labels,
+        datasets: [{
+          label: "Branch Count",
+          data,
+          backgroundColor: [
+            "#34d399", "#f59e0b", "#ef4444", "#6366f1",
+            "#10b981", "#eab308", "#9ca3af"
+          ]
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: box.graph === "doughnut" ? "bottom" : "top" },
+          tooltip: {
+            callbacks: {
+              label: ctx => `${ctx.label}: ${ctx.raw} branches`
+            }
+          }
+        },
+        scales: box.graph === "bar" ? {
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "Branch Count" }
+          }
+        } : {}
+      }
+    });
+  }
+    
   async function refreshBox(index) {
     showSpinner(index, true);
     const box = config.boxes[index];
@@ -1147,8 +1469,13 @@ window.addEventListener('DOMContentLoaded', () => {
         await loadInactiveIssues(index);
       } else if (box.category === "loc_change") {
         await loadLocChange(index);
-      }
-                             
+      } else if (box.category === "branch_activity") {
+        await loadBranchActivity(index);
+      } else if (box.category === "branch_divergence") {
+        await loadBranchDivergence(index);
+      } else if (box.category === "branch_type_breakdown") {
+        await loadBranchTypeBreakdown(index);
+      }                                       
     } catch (err) {
       console.error("Error loading box:", err);
     }
@@ -1316,9 +1643,65 @@ window.addEventListener('DOMContentLoaded', () => {
     refreshBox(refreshIndex);
     editingIndex = null;
   });
+    
+  function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    const colors = {
+      success: 'bg-green-600',
+      error: 'bg-red-600',
+      info: 'bg-blue-600'
+    };
+  
+    toast.className = `
+      ${colors[type] || colors.info}
+      text-white px-4 py-2 rounded shadow-lg animate-fade-in-out transition-opacity duration-500 opacity-0
+    `;
+    toast.textContent = message;
+  
+    document.getElementById('toast-container').appendChild(toast);
+  
+    // Trigger fade-in
+    requestAnimationFrame(() => toast.classList.add('opacity-100'));
+  
+    // Remove after 3 seconds
+    setTimeout(() => {
+      toast.classList.remove('opacity-100');
+      toast.classList.add('opacity-0');
+      setTimeout(() => toast.remove(), 500);
+    }, 3000);
+  }
+  
+  window.printAboutContent = function () {
+    const content = document.querySelector('#aboutModal > div').innerHTML;
+    const printWindow = window.open('', '', 'width=800,height=600');
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>About CM4Git</title>
+          <style>
+            body { font-family: sans-serif; padding: 20px; background: white; color: black; }
+            h2, h3 { color: #6d28d9; }
+            ul, ol { margin-left: 20px; }
+            code { background: #eee; padding: 2px 4px; border-radius: 4px; }
+          </style>
+        </head>
+        <body>${content}</body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+    printWindow.close();
+  }
+  
   
 
   addBoxBtn.addEventListener('click', () => openModal());
   config.boxes.forEach((_, index) => renderBox(index));
   setupSortable();
+  const toastContainer = document.createElement('div');
+  toastContainer.id = 'toast-container';
+  toastContainer.className = 'fixed top-4 right-4 z-50 space-y-2';
+  document.body.appendChild(toastContainer);
+
 });
