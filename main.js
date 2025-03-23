@@ -15,6 +15,18 @@ window.addEventListener('DOMContentLoaded', () => {
   addBoxBtn.textContent = "➕ Add Box";
   dashboard.parentNode.insertBefore(addBoxBtn, dashboard);
 
+  const refreshAllBtn = document.createElement('button');
+  refreshAllBtn.id = "refreshAllBtn";
+  refreshAllBtn.className = "mb-4 ml-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded";
+  refreshAllBtn.textContent = "🔁 Refresh All";
+  dashboard.parentNode.insertBefore(refreshAllBtn, dashboard);
+  refreshAllBtn.addEventListener('click', async () => {
+    for (let i = 0; i < config.boxes.length; i++) {
+      await refreshBox(i);
+      await new Promise(resolve => setTimeout(resolve, 500)); // 0.5 second delay
+    }
+  });
+  
   const modal = document.createElement('div');
   modal.id = "editorModal";
   modal.className = "fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50 px-2 py-5 hidden";
@@ -38,13 +50,46 @@ window.addEventListener('DOMContentLoaded', () => {
       </label>
       <label class="block mb-2 text-sm">Category
         <select id="boxCategory" class="w-full p-1 bg-gray-900 text-white border border-gray-700 rounded mt-1 text-sm">
-          <option value="commits" selected>Commits</option>
+          <option value="pr_merge_time">Avg PR Merge Time</option>  
+          <option value="issue_resolution">Avg Time to Close Issues</option>
+          <option value="code_churn">Code Churn (Files Changed)</option>  
+          <option value="comments_over_time">Comments Over Time</option>
+          <option value="contributors">Commits by Contributor</option>
+          <option value="commits">Commits</option>
+          <option value="inactive_issues">Inactive Issues</option>
+          <option value="issues">Issues Over Time</option>        
+          <option value="lead_time">Lead Time for Changes</option>
+          <option value="loc_change">Lines Added vs Deleted</option>                      
+          <option value="most_active_days">Most Active Days</option>
+          <option value="most_changed_files">Most Changed Files</option>
+          <option value="issue_compare">New vs Closed Issues</option>
+          <option value="pull_requests">Open vs Closed PRs</option> 
+          <option value="pr_rejection_rate">PR Rejection Rate</option>         
+          <option value="release_frequency">Release Frequency</option>          
         </select>
+      </label>
+      <label class="block mb-2 text-sm">
+        <div class="flex justify-between items-center">
+          <span>GitHub Token (optional)</span>
+          <a href="https://github.com/settings/tokens" target="_blank" title="Generate a token"
+            class="text-blue-400 hover:underline text-xs ml-2">(get token)</a>
+        </div>
+        <div class="relative mt-1">
+          <input id="boxToken" type="text"
+            class="w-full pr-20 p-1 bg-gray-900 text-white border border-gray-700 rounded text-sm"
+          />
+          <button type="button" id="toggleToken"
+            class="absolute right-12 top-0 h-full px-2 text-xs text-gray-400 hover:text-white">Hide</button>
+          <button type="button" id="copyToken"
+            class="absolute right-0 top-0 h-full px-2 text-xs text-gray-400 hover:text-white">Copy</button>
+        </div>
       </label>
       <label class="block mb-4 text-sm">Graph Type
         <select id="boxGraph" class="w-full p-1 bg-gray-900 text-white border border-gray-700 rounded mt-1 text-sm">
           <option value="line" selected>Line</option>
           <option value="bar">Bar</option>
+          <option value="doughnut">Doughnut</option>
+          <option value="pie">Pie</option>
         </select>
       </label>
       <div class="flex justify-end gap-2">
@@ -54,7 +99,463 @@ window.addEventListener('DOMContentLoaded', () => {
     </div>
   `;
   document.body.appendChild(modal);
+  async function loadMostChangedFiles(index) {
+    const box = config.boxes[index];
+    const since = getSinceDate(box.range);
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/commits?since=${since}&per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const commits = await response.json();
+  
+    if (!Array.isArray(commits)) {
+      console.error("GitHub API returned error:", commits);
+      return;
+    }
+  
+    const fileChanges = {};
+  
+    for (const commit of commits) {
+      const detailResp = await fetch(commit.url, { headers });
+      const detail = await detailResp.json();
+  
+      detail.files?.forEach(file => {
+        const filename = file.filename;
+        fileChanges[filename] = (fileChanges[filename] || 0) + 1;
+      });
+    }
+  
+    const sortedFiles = Object.entries(fileChanges)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10); // top 10
+  
+    const labels = sortedFiles.map(entry => entry[0]);
+    const data = sortedFiles.map(entry => entry[1]);
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Times Changed',
+          data,
+          backgroundColor: 'rgba(239, 68, 68, 0.3)', // red-500
+          borderColor: '#ef4444',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Changes"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function loadLocChange(index) {
+    const box = config.boxes[index];
+    const since = getSinceDate(box.range);
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/commits?since=${since}&per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const commits = await response.json();
+  
+    if (!Array.isArray(commits)) {
+      console.error("GitHub API returned error:", commits);
+      return;
+    }
+  
+    const dailyAdded = {};
+    const dailyDeleted = {};
+  
+    for (const commit of commits) {
+      const detailResp = await fetch(commit.url, { headers });
+      const detail = await detailResp.json();
+      const date = new Date(detail.commit.author.date).toISOString().split("T")[0];
+  
+      let additions = 0;
+      let deletions = 0;
+      detail.files?.forEach(file => {
+        additions += file.additions || 0;
+        deletions += file.deletions || 0;
+      });
+  
+      dailyAdded[date] = (dailyAdded[date] || 0) + additions;
+      dailyDeleted[date] = (dailyDeleted[date] || 0) + deletions;
+    }
+  
+    const labels = Array.from(new Set([...Object.keys(dailyAdded), ...Object.keys(dailyDeleted)])).sort();
+    const addedData = labels.map(date => dailyAdded[date] || 0);
+    const deletedData = labels.map(date => dailyDeleted[date] || 0);
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph, // bar, line, etc.
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Lines Added',
+            data: addedData,
+            backgroundColor: 'rgba(34, 197, 94, 0.4)', // green
+            borderColor: '#22c55e',
+            borderWidth: 1,
+            fill: box.graph === "line"
+          },
+          {
+            label: 'Lines Deleted',
+            data: deletedData,
+            backgroundColor: 'rgba(239, 68, 68, 0.4)', // red
+            borderColor: '#ef4444',
+            borderWidth: 1,
+            fill: box.graph === "line"
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Lines of Code"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function loadPRRejectionRate(index) {
+    const box = config.boxes[index];
+    const since = getSinceDate(box.range);
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const pullRequests = await response.json();
+  
+    if (!Array.isArray(pullRequests)) {
+      console.error("GitHub API returned error:", pullRequests);
+      return;
+    }
+  
+    const daily = {};
+  
+    pullRequests.forEach(pr => {
+      if (!pr.closed_at) return;
+  
+      const closedDate = new Date(pr.closed_at).toISOString().split("T")[0];
+      const wasMerged = !!pr.merged_at;
+  
+      if (!daily[closedDate]) {
+        daily[closedDate] = { merged: 0, rejected: 0 };
+      }
+  
+      if (wasMerged) {
+        daily[closedDate].merged += 1;
+      } else {
+        daily[closedDate].rejected += 1;
+      }
+    });
+  
+    const labels = Object.keys(daily).sort();
+    const data = labels.map(date => {
+      const { merged, rejected } = daily[date];
+      const total = merged + rejected;
+      if (total === 0) return 0;
+      return parseFloat(((rejected / total) * 100).toFixed(2));
+    });
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'PR Rejection Rate (%)',
+          data,
+          borderColor: '#ef4444', // red-500
+          backgroundColor: 'rgba(239, 68, 68, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            max: 100,
+            title: {
+              display: true,
+              text: "Rejection Rate (%)"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function loadMostActiveDays(index) {
+    const box = config.boxes[index];
+    const since = getSinceDate(box.range);
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/commits?since=${since}&per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const commits = await response.json();
+  
+    if (!Array.isArray(commits)) {
+      console.error("GitHub API returned error:", commits);
+      return;
+    }
+  
+    const dayLabels = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dailyCounts = [0, 0, 0, 0, 0, 0, 0];
+  
+    commits.forEach(commit => {
+      const day = new Date(commit.commit.author.date).getDay(); // 0 = Sunday
+      dailyCounts[day]++;
+    });
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels: dayLabels,
+        datasets: [{
+          label: 'Commits per Day of Week',
+          data: dailyCounts,
+          backgroundColor: 'rgba(251, 191, 36, 0.3)', // amber-400
+          borderColor: '#fbbf24',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Commits"
+            }
+          }
+        }
+      }
+    });
+  }
+  
 
+  async function loadCodeChurn(index) {
+    const box = config.boxes[index];
+    const since = getSinceDate(box.range);
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/commits?since=${since}&per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const commits = await response.json();
+  
+    if (!Array.isArray(commits)) {
+      console.error("GitHub API returned error:", commits);
+      return;
+    }
+  
+    const dailyChanges = {};
+  
+    for (const commit of commits) {
+      const detailResp = await fetch(commit.url, { headers });
+      const detail = await detailResp.json();
+  
+      const date = new Date(detail.commit.author.date).toISOString().split("T")[0];
+      const filesChanged = detail.files?.length || 0;
+  
+      dailyChanges[date] = (dailyChanges[date] || 0) + filesChanged;
+    }
+  
+    const labels = Object.keys(dailyChanges).sort();
+    const data = labels.map(date => dailyChanges[date]);
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Files Changed',
+          data,
+          borderColor: '#34d399', // Tailwind green-400
+          backgroundColor: 'rgba(52, 211, 153, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Files Changed"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  
+  async function loadCommentsOverTime(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const since = getSinceDate(box.range);
+    const issuesUrl = `https://api.github.com/repos/${box.repo}/issues?state=all&since=${since}&per_page=100`;
+    const response = await fetch(issuesUrl, { headers });
+    const issues = await response.json();
+  
+    if (!Array.isArray(issues)) {
+      console.error("GitHub API returned error:", issues);
+      return;
+    }
+  
+    const dailyComments = {};
+  
+    issues.forEach(issue => {
+      const createdAt = new Date(issue.created_at).toISOString().split("T")[0];
+      const comments = issue.comments || 0;
+  
+      if (!dailyComments[createdAt]) {
+        dailyComments[createdAt] = 0;
+      }
+      dailyComments[createdAt] += comments;
+    });
+  
+    const labels = Object.keys(dailyComments).sort();
+    const data = labels.map(date => dailyComments[date]);
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Comments on Issues & PRs',
+          data,
+          borderColor: '#e879f9', // Tailwind fuchsia-400
+          backgroundColor: 'rgba(232, 121, 249, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Comments"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function loadPRMergeTime(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const since = getSinceDate(box.range);
+    const url = `https://api.github.com/repos/${box.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const pulls = await response.json();
+  
+    if (!Array.isArray(pulls)) {
+      console.error("GitHub API returned error:", pulls);
+      return;
+    }
+  
+    const mergeDurations = {};
+  
+    pulls.forEach(pr => {
+      if (!pr.merged_at) return; // only include merged PRs
+      const mergedDate = new Date(pr.merged_at);
+      const createdDate = new Date(pr.created_at);
+  
+      const mergeDay = mergedDate.toISOString().split("T")[0];
+      const daysOpen = (mergedDate - createdDate) / (1000 * 60 * 60 * 24); // in days
+  
+      if (!mergeDurations[mergeDay]) {
+        mergeDurations[mergeDay] = [];
+      }
+  
+      mergeDurations[mergeDay].push(daysOpen);
+    });
+  
+    const labels = Object.keys(mergeDurations).sort();
+    const data = labels.map(date => {
+      const durations = mergeDurations[date];
+      const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+      return parseFloat(avg.toFixed(2));
+    });
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Avg Time to Merge PRs (Days)',
+          data,
+          borderColor: '#34d399', // Tailwind green-400
+          backgroundColor: 'rgba(52, 211, 153, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Avg Days to Merge"
+            }
+          }
+        }
+      }
+    });
+  }
+  
   function getSinceDate(range) {
     const now = new Date();
     let since = new Date();
@@ -74,12 +575,297 @@ window.addEventListener('DOMContentLoaded', () => {
     return since.toISOString();
   }
   
-
+  async function loadIssueCompare(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const since = getSinceDate(box.range);
+    const url = `https://api.github.com/repos/${box.repo}/issues?state=all&since=${since}&per_page=100`;
+ 
+    const response = await fetch(url, { headers });
+    const issues = await response.json();
+  
+    if (!Array.isArray(issues)) {
+      console.error("GitHub API returned error:", issues);
+      return;
+    }
+  
+    const openedCounts = {};
+    const closedCounts = {};
+  
+    issues.forEach(issue => {
+      if (issue.pull_request) return; // skip PRs
+  
+      const createdDate = new Date(issue.created_at).toISOString().split("T")[0];
+      openedCounts[createdDate] = (openedCounts[createdDate] || 0) + 1;
+  
+      if (issue.closed_at) {
+        const closedDate = new Date(issue.closed_at).toISOString().split("T")[0];
+        closedCounts[closedDate] = (closedCounts[closedDate] || 0) + 1;
+      }
+    });
+  
+    const allDates = new Set([
+      ...Object.keys(openedCounts),
+      ...Object.keys(closedCounts),
+    ]);
+    const sortedDates = Array.from(allDates).sort();
+  
+    const openData = sortedDates.map(date => openedCounts[date] || 0);
+    const closedData = sortedDates.map(date => closedCounts[date] || 0);
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels: sortedDates,
+        datasets: [
+          {
+            label: 'Issues Opened',
+            data: openData,
+            borderColor: '#60a5fa', // Tailwind blue-400
+            backgroundColor: 'rgba(96, 165, 250, 0.2)',
+            fill: true,
+            tension: 0.3
+          },
+          {
+            label: 'Issues Closed',
+            data: closedData,
+            borderColor: '#f472b6', // Tailwind pink-400
+            backgroundColor: 'rgba(244, 114, 182, 0.2)',
+            fill: true,
+            tension: 0.3
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Issues"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function loadIssueResolution(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const since = getSinceDate(box.range);
+    const url = `https://api.github.com/repos/${box.repo}/issues?state=closed&since=${since}&per_page=100`;
+    
+    const response = await fetch(url, { headers });
+    const issues = await response.json();
+  
+    if (!Array.isArray(issues)) {
+      console.error("GitHub API returned error:", issues);
+      return;
+    }
+  
+    // Filter out pull requests
+    const filteredIssues = issues.filter(issue => !issue.pull_request);
+  
+    const dailyDurations = {};
+  
+    filteredIssues.forEach(issue => {
+      if (!issue.closed_at) return;
+  
+      const created = new Date(issue.created_at);
+      const closed = new Date(issue.closed_at);
+      const daysToClose = (closed - created) / (1000 * 60 * 60 * 24); // in days
+      const closedDateStr = closed.toISOString().split("T")[0];
+  
+      if (!dailyDurations[closedDateStr]) {
+        dailyDurations[closedDateStr] = [];
+      }
+      dailyDurations[closedDateStr].push(daysToClose);
+    });
+  
+    const labels = Object.keys(dailyDurations).sort();
+    const data = labels.map(date =>
+      dailyDurations[date].reduce((a, b) => a + b, 0) / dailyDurations[date].length
+    );
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Avg Days to Close Issue',
+          data,
+          borderColor: '#34d399', // Tailwind green-400
+          backgroundColor: 'rgba(52, 211, 153, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Days"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function loadIssues(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const since = getSinceDate(box.range);
+    const url = `https://api.github.com/repos/${box.repo}/issues?state=all&since=${since}&per_page=100`;
+ 
+    const response = await fetch(url, { headers });
+    const issues = await response.json();
+  
+    if (!Array.isArray(issues)) {
+      console.error("GitHub API returned error:", issues);
+      return;
+    }
+  
+    // Filter out pull requests (issues with a pull_request field)
+    const filteredIssues = issues.filter(issue => !issue.pull_request);
+  
+    const dailyCounts = {};
+    filteredIssues.forEach(issue => {
+      const date = new Date(issue.created_at).toISOString().split("T")[0];
+      dailyCounts[date] = (dailyCounts[date] || 0) + 1;
+    });
+  
+    const labels = Object.keys(dailyCounts).sort();
+    const data = labels.map(label => dailyCounts[label]);
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Issues',
+          data,
+          borderColor: '#facc15',
+          backgroundColor: 'rgba(250, 204, 21, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: true }
+        }
+      }
+    });
+  }
+  
+  async function loadPullRequests(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const baseUrl = `https://api.github.com/repos/${box.repo}/pulls?per_page=100`;
+    const openUrl = `${baseUrl}&state=open`;
+    const closedUrl = `${baseUrl}&state=closed`;
+  
+    const [openRes, closedRes] = await Promise.all([
+      fetch(openUrl, { headers }),
+      fetch(closedUrl, { headers })
+    ]);
+    
+  
+    const openPRs = await openRes.json();
+    const closedPRs = await closedRes.json();
+  
+    if (!Array.isArray(openPRs) || !Array.isArray(closedPRs)) {
+      console.error("Error fetching PR data:", openPRs, closedPRs);
+      return;
+    }
+  
+    const labels = ["Open", "Closed"];
+    const data = [openPRs.length, closedPRs.length];
+    const canvasId = `chart_${index}`;
+  
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph === "bar" ? "bar" : "doughnut", // default to doughnut for this KPI
+      data: {
+        labels,
+        datasets: [{
+          label: 'Pull Requests',
+          data,
+          backgroundColor: ['#60a5fa', '#f87171'],
+          borderColor: ['#3b82f6', '#ef4444'],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+  }
+  
+  async function loadContributors(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/stats/contributors`;
+    const response = await fetch(url, { headers });
+    const contributors = await response.json();
+  
+    if (!Array.isArray(contributors)) {
+      console.error("Unexpected response:", contributors);
+      return;
+    }
+  
+    const labels = contributors.map(c => c.author.login);
+    const data = contributors.map(c => c.total);
+    const canvasId = `chart_${index}`;
+  
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Commits',
+          data,
+          backgroundColor: 'rgba(99, 102, 241, 0.7)',
+          borderColor: 'rgb(99, 102, 241)',
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: true }
+        }
+      }
+    });
+  }
+  
   async function loadCommits(index) {
     const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
     const since = getSinceDate(box.range);
     const url = `https://api.github.com/repos/${box.repo}/commits?since=${since}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { headers });
     const commits = await response.json();
 
     const dailyCounts = {};
@@ -114,10 +900,246 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
-
-  function refreshBox(index) {
-    loadCommits(index);
+  async function loadReleaseFrequency(index) {    
+    const box = config.boxes[index];
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const since = getSinceDate(box.range);
+    const url = `https://api.github.com/repos/${box.repo}/releases?per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const releases = await response.json();
+  
+    if (!Array.isArray(releases)) {
+      console.error("GitHub API returned error:", releases);
+      return;
+    }
+  
+    const filtered = releases.filter(release => new Date(release.published_at) >= new Date(since));
+  
+    const dailyCounts = {};
+    filtered.forEach(release => {
+      const date = new Date(release.published_at).toISOString().split("T")[0];
+      dailyCounts[date] = (dailyCounts[date] || 0) + 1;
+    });
+  
+    const labels = Object.keys(dailyCounts).sort();
+    const data = labels.map(label => dailyCounts[label]);
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Releases',
+          data,
+          borderColor: '#60a5fa', // Tailwind blue-400
+          backgroundColor: 'rgba(96, 165, 250, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Release Count"
+            }
+          }
+        }
+      }
+    });
   }
+  
+  async function loadLeadTimeForChanges(index) {
+    const box = config.boxes[index];
+    const since = getSinceDate(box.range);
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const prsUrl = `https://api.github.com/repos/${box.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100`;
+  
+    const response = await fetch(prsUrl, { headers });
+    const pullRequests = await response.json();
+  
+    if (!Array.isArray(pullRequests)) {
+      console.error("GitHub API returned error:", pullRequests);
+      return;
+    }
+  
+    const leadTimes = {};
+  
+    for (const pr of pullRequests) {
+      if (!pr.merged_at) continue; // skip unmerged PRs
+  
+      const prDetailRes = await fetch(pr.url, { headers });
+      const prDetail = await prDetailRes.json();
+  
+      const baseCommitUrl = prDetail.commits_url;
+      const commitsRes = await fetch(baseCommitUrl, { headers });
+      const commits = await commitsRes.json();
+  
+      if (!Array.isArray(commits) || commits.length === 0) continue;
+  
+      const firstCommitDate = new Date(commits[0].commit.author.date);
+      const mergeDate = new Date(pr.merged_at);
+      const leadTime = (mergeDate - firstCommitDate) / (1000 * 60 * 60 * 24); // in days
+      const mergeDay = mergeDate.toISOString().split("T")[0];
+  
+      if (!leadTimes[mergeDay]) {
+        leadTimes[mergeDay] = [];
+      }
+      leadTimes[mergeDay].push(leadTime);
+    }
+  
+    const labels = Object.keys(leadTimes).sort();
+    const data = labels.map(date =>
+      parseFloat((leadTimes[date].reduce((a, b) => a + b, 0) / leadTimes[date].length).toFixed(2))
+    );
+  
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: 'Lead Time for Changes (Days)',
+          data,
+          borderColor: '#f59e0b', // amber-500
+          backgroundColor: 'rgba(245, 158, 11, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Days"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function loadInactiveIssues(index) {
+    const box = config.boxes[index];
+    const since = getSinceDate(box.range);
+    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+    const url = `https://api.github.com/repos/${box.repo}/issues?state=open&since=${since}&per_page=100`;
+  
+    const response = await fetch(url, { headers });
+    const issues = await response.json();
+  
+    if (!Array.isArray(issues)) {
+      console.error("GitHub API returned error:", issues);
+      return;
+    }
+  
+    // Filter out PRs
+    const filtered = issues.filter(issue => !issue.pull_request);
+  
+    const dailyInactiveCounts = {};
+    const now = new Date();
+    const inactivityThresholdDays = 14;
+  
+    filtered.forEach(issue => {
+      const lastUpdated = new Date(issue.updated_at);
+      const daysInactive = (now - lastUpdated) / (1000 * 60 * 60 * 24);
+      if (daysInactive >= inactivityThresholdDays) {
+        const created = new Date(issue.created_at).toISOString().split("T")[0];
+        dailyInactiveCounts[created] = (dailyInactiveCounts[created] || 0) + 1;
+      }
+    });
+  
+    const labels = Object.keys(dailyInactiveCounts).sort();
+    const data = labels.map(date => dailyInactiveCounts[date]);
+    const canvasId = `chart_${index}`;
+    if (charts[canvasId]) charts[canvasId].destroy();
+  
+    charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: box.graph,
+      data: {
+        labels,
+        datasets: [{
+          label: `Inactive Issues (≥${inactivityThresholdDays} days)`,
+          data,
+          borderColor: '#f59e0b', // amber-500
+          backgroundColor: 'rgba(245, 158, 11, 0.3)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: "Inactive Issues"
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  async function refreshBox(index) {
+    showSpinner(index, true);
+    const box = config.boxes[index];
+  
+    try {
+      if (box.category === "issues") {
+        await loadIssues(index);
+      } else if (box.category === "commits") {
+        await loadCommits(index);
+      } else if (box.category === "contributors") {
+        await loadContributors(index);
+      } else if (box.category === "pull_requests") {
+        await loadPullRequests(index);
+      } else if (box.category === "issue_resolution") {
+        await loadIssueResolution(index);
+      } else if (box.category === "issue_compare") {
+        await loadIssueCompare(index);
+      } else if (box.category === "pr_merge_time") {
+        await loadPRMergeTime(index);
+      } else if (box.category === "comments_over_time") {
+        await loadCommentsOverTime(index);
+      } else if (box.category === "release_frequency") {
+        await loadReleaseFrequency(index);
+      } else if (box.category === "code_churn") {
+        await loadCodeChurn(index);
+      } else if (box.category === "most_active_days") {
+        await loadMostActiveDays(index);
+      } else if (box.category === "most_changed_files") {
+        await loadMostChangedFiles(index);
+      } else if (box.category === "lead_time") {
+        await loadLeadTimeForChanges(index);
+      } else if (box.category === "pr_rejection_rate") {
+        await loadPRRejectionRate(index);
+      } else if (box.category === "inactive_issues") {
+        await loadInactiveIssues(index);
+      } else if (box.category === "loc_change") {
+        await loadLocChange(index);
+      }
+                             
+    } catch (err) {
+      console.error("Error loading box:", err);
+    }
+  
+    showSpinner(index, false);
+  }
+  
 
   function showDeleteConfirm(index) {
     const confirmModal = document.createElement('div');
@@ -141,10 +1163,14 @@ window.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  function renderBox(index) {
+  function renderBox(index, card = null) {
     const box = config.boxes[index];
-    const card = document.createElement('div');
-    card.className = 'bg-gray-800 rounded-lg shadow p-4';
+    if (!card) {
+      card = document.createElement('div');
+      dashboard.appendChild(card);
+    }
+  
+    card.className = 'bg-gray-800 rounded-lg shadow p-4 relative';
     const canvasId = `chart_${index}`;
     card.innerHTML = `
       <div class="flex justify-between items-center mb-2">
@@ -155,14 +1181,24 @@ window.addEventListener('DOMContentLoaded', () => {
           <button class="refresh-btn hover:underline" data-index="${index}">Refresh</button>
         </div>
       </div>
-      <canvas id="${canvasId}" class="mt-2"></canvas>
+      <div class="loading-indicator hidden absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-60 z-10">
+        <div class="animate-spin rounded-full h-8 w-8 border-t-2 border-purple-500"></div>
+      </div>
+      <canvas id="${canvasId}" class="mt-2 z-0"></canvas>
     `;
-    dashboard.appendChild(card);
-
+  
     card.querySelector('.edit-btn').addEventListener('click', () => openModal(index));
     card.querySelector('.delete-btn').addEventListener('click', () => showDeleteConfirm(index));
     card.querySelector('.refresh-btn').addEventListener('click', () => refreshBox(index));
   }
+  
+  
+  function showSpinner(index, show) {
+    const card = dashboard.children[index];
+    const spinner = card.querySelector('.loading-indicator');
+    if (spinner) spinner.classList.toggle('hidden', !show);
+  }
+  
 
   function openModal(index = null) {
     editingIndex = index;
@@ -173,6 +1209,24 @@ window.addEventListener('DOMContentLoaded', () => {
     document.getElementById('boxCategory').value = box?.category || "commits";
     document.getElementById('boxGraph').value = box?.graph || "line";
     modal.classList.remove('hidden');
+    document.getElementById('toggleToken').onclick = () => {
+      const input = document.getElementById('boxToken');
+      const btn = document.getElementById('toggleToken');
+      const isText = input.type === 'text';
+      input.type = isText ? 'password' : 'text';
+      btn.textContent = isText ? 'Show' : 'Hide';
+    };
+    
+    document.getElementById('copyToken').onclick = () => {
+      const input = document.getElementById('boxToken');
+      navigator.clipboard.writeText(input.value)
+        .then(() => {
+          const btn = document.getElementById('copyToken');
+          btn.textContent = 'Copied!';
+          setTimeout(() => btn.textContent = 'Copy', 1500);
+        });
+    };
+    
   }
 
   document.getElementById('cancelBtn').addEventListener('click', () => {
@@ -183,34 +1237,34 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('saveBtn').addEventListener('click', () => {
     const newBox = {
       title: document.getElementById('boxTitle').value || "Untitled",
-      repo: document.getElementById('boxRepo').value,
+      repo: document.getElementById('boxRepo').value.trim(),
       category: document.getElementById('boxCategory').value,
       range: document.getElementById('boxRange').value,
-      graph: document.getElementById('boxGraph').value
+      graph: document.getElementById('boxGraph').value,
+      token: document.getElementById('boxToken')?.value.trim() || ''
     };
+  
     if (!newBox.repo) return alert("Repo is required");
-
-    if (editingIndex !== null) {
-      config.boxes[editingIndex] = newBox;
-    } else {
-      config.boxes.push(newBox);
-    }
-
+  
+    
     localStorage.setItem('cm4git_config', JSON.stringify(config));
     modal.classList.add('hidden');
+  
     const refreshIndex = editingIndex !== null ? editingIndex : config.boxes.length - 1;
+  
 
     if (editingIndex !== null) {
-      const oldCard = dashboard.children[refreshIndex];
-      if (oldCard) dashboard.removeChild(oldCard);
-      renderBox(refreshIndex);
+      const newCard = document.createElement('div');
+      renderBox(refreshIndex, newCard);
+      dashboard.replaceChild(newCard, dashboard.children[refreshIndex]);
     } else {
       renderBox(refreshIndex);
     }
 
-    refreshBox(refreshIndex);
+    refreshBox(refreshIndex);     
     editingIndex = null;
   });
+  
 
   addBoxBtn.addEventListener('click', () => openModal());
   config.boxes.forEach((_, index) => renderBox(index));
