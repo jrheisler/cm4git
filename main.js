@@ -1,10 +1,26 @@
 window.addEventListener('DOMContentLoaded', () => {
-  const defaultConfig = { boxes: [] };
-  if (!localStorage.getItem('cm4git_config')) {
-    localStorage.setItem('cm4git_config', JSON.stringify(defaultConfig));
-  }
 
-  let config = JSON.parse(localStorage.getItem('cm4git_config'));
+  const defaultBoxTemplates = [
+    { title: "Avg PR Merge Time", category: "pr_merge_time", range: "this_week", graph: "line" },
+    { title: "Avg Time to Close", category: "issue_resolution", range: "this_year", graph: "line" },
+    { title: "Code Churn (Files Changed)", category: "code_churn", range: "this_year", graph: "line" },
+    { title: "Commits", category: "commits", range: "this_year", graph: "line" },
+    { title: "Commits by Contributor", category: "contributors", range: "this_year", graph: "doughnut" },
+    { title: "Comments Over Time", category: "comments_over_time", range: "this_year", graph: "line" },
+    { title: "Issues Over Time", category: "issues", range: "this_year", graph: "line" },
+    { title: "New vs Closed Issues", category: "issue_compare", range: "this_year", graph: "bar" },
+    { title: "Open vs Close PR", category: "pull_requests", range: "this_year", graph: "doughnut" },
+    { title: "Release Frequency", category: "release_frequency", range: "last_year", graph: "bar" }
+  ];
+  
+  const defaultConfig = { boxes: [] };
+  let config = JSON.parse(localStorage.getItem('cm4git_config') || 'null');
+
+  if (!config || !Array.isArray(config.boxes) || config.boxes.length === 0) {
+    config = { boxes: defaultBoxTemplates };
+    localStorage.setItem('cm4git_config', JSON.stringify(config));
+  }
+ 
   let editingIndex = null;
   const dashboard = document.getElementById('dashboard');
   const charts = {};
@@ -1165,16 +1181,24 @@ window.addEventListener('DOMContentLoaded', () => {
 
   function renderBox(index, card = null) {
     const box = config.boxes[index];
+    const boxId = `${box.repo}_${box.category}_${index}`;
+  
     if (!card) {
       card = document.createElement('div');
+      card.dataset.boxId = boxId;
       dashboard.appendChild(card);
+    } else {
+      card.dataset.boxId = boxId; // In case it's being reused
     }
   
     card.className = 'bg-gray-800 rounded-lg shadow p-4 relative';
     const canvasId = `chart_${index}`;
     card.innerHTML = `
       <div class="flex justify-between items-center mb-2">
-        <h2 class="text-lg font-semibold">${box.title}</h2>
+        <div class="flex items-center space-x-2">
+          <span class="drag-handle cursor-move text-gray-400">⠿</span>
+          <h2 class="text-lg font-semibold">${box.title}</h2>
+        </div>
         <div class="text-sm text-blue-400 space-x-2">
           <button class="edit-btn hover:underline" data-index="${index}">Edit</button>
           <button class="delete-btn hover:underline" data-index="${index}">Delete</button>
@@ -1192,6 +1216,24 @@ window.addEventListener('DOMContentLoaded', () => {
     card.querySelector('.refresh-btn').addEventListener('click', () => refreshBox(index));
   }
   
+  function setupSortable() {
+    Sortable.create(dashboard, {
+      animation: 150,
+      handle: '.drag-handle',
+      onEnd: () => {
+        const newOrder = Array.from(dashboard.children).map(card => {
+          const id = card.dataset.boxId;
+          return config.boxes.find(b =>
+            `${b.repo}_${b.category}_${config.boxes.indexOf(b)}` === id
+          );
+        }).filter(Boolean);
+  
+        config.boxes = newOrder;
+        localStorage.setItem('cm4git_config', JSON.stringify(config));
+      }
+    });
+  }
+  
   
   function showSpinner(index, show) {
     const card = dashboard.children[index];
@@ -1203,12 +1245,16 @@ window.addEventListener('DOMContentLoaded', () => {
   function openModal(index = null) {
     editingIndex = index;
     const box = index !== null ? config.boxes[index] : {};
+    
     document.getElementById('boxTitle').value = box?.title || "";
-    document.getElementById('boxRepo').value = box?.repo || "";
+    document.getElementById('boxRepo').value = box?.repo || "";        // ✅ Ensure this is here
     document.getElementById('boxRange').value = box?.range || "this_week";
     document.getElementById('boxCategory').value = box?.category || "commits";
     document.getElementById('boxGraph').value = box?.graph || "line";
+    document.getElementById('boxToken').value = box?.token || "";      // ✅ And this
+    
     modal.classList.remove('hidden');
+  
     document.getElementById('toggleToken').onclick = () => {
       const input = document.getElementById('boxToken');
       const btn = document.getElementById('toggleToken');
@@ -1216,7 +1262,7 @@ window.addEventListener('DOMContentLoaded', () => {
       input.type = isText ? 'password' : 'text';
       btn.textContent = isText ? 'Show' : 'Hide';
     };
-    
+  
     document.getElementById('copyToken').onclick = () => {
       const input = document.getElementById('boxToken');
       navigator.clipboard.writeText(input.value)
@@ -1226,8 +1272,8 @@ window.addEventListener('DOMContentLoaded', () => {
           setTimeout(() => btn.textContent = 'Copy', 1500);
         });
     };
-    
   }
+  
 
   document.getElementById('cancelBtn').addEventListener('click', () => {
     modal.classList.add('hidden');
@@ -1246,13 +1292,19 @@ window.addEventListener('DOMContentLoaded', () => {
   
     if (!newBox.repo) return alert("Repo is required");
   
-    
+    const refreshIndex = editingIndex !== null ? editingIndex : config.boxes.length;
+  
+    // ✅ Save the box to config BEFORE rendering
+    if (editingIndex !== null) {
+      config.boxes[editingIndex] = newBox;
+    } else {
+      config.boxes.push(newBox);
+    }
+  
     localStorage.setItem('cm4git_config', JSON.stringify(config));
     modal.classList.add('hidden');
   
-    const refreshIndex = editingIndex !== null ? editingIndex : config.boxes.length - 1;
-  
-
+    // ✅ Then render the updated version
     if (editingIndex !== null) {
       const newCard = document.createElement('div');
       renderBox(refreshIndex, newCard);
@@ -1260,12 +1312,13 @@ window.addEventListener('DOMContentLoaded', () => {
     } else {
       renderBox(refreshIndex);
     }
-
-    refreshBox(refreshIndex);     
+  
+    refreshBox(refreshIndex);
     editingIndex = null;
   });
   
 
   addBoxBtn.addEventListener('click', () => openModal());
   config.boxes.forEach((_, index) => renderBox(index));
+  setupSortable();
 });
