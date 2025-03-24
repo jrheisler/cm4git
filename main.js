@@ -3,7 +3,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const defaultBoxTemplates = [
     { title: "Avg PR Merge Time", category: "pr_merge_time", range: "this_week", graph: "line" },
     { title: "Avg Time to Close", category: "issue_resolution", range: "this_year", graph: "line" },
-    { title: "Branch Activity", category: "branch_activity", range: "this_year", graph: "bar" },
+    { title: "Branch Activity", category: "branch_activity", range: "this_year", graph: "doughnut" },
     { title: "Branch Divergence", category: "branch_divergence", range: "this_year", graph: "bar" },
     { title: "Branches by Type", category: "branch_type_breakdown", range: "this_year", graph: "bar" },
     { title: "Code Churn (Files Changed)", category: "code_churn", range: "this_year", graph: "line" },
@@ -350,67 +350,126 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   
 
-  async function loadBranchActivity(index) {
-    const box = config.boxes[index];
-    const headers = box.token ? { Authorization: `token ${box.token}` } : {};
-    const url = `https://api.github.com/repos/${box.repo}/branches`;
-  
-    const response = await fetch(url, { headers });
-    const branches = await response.json();
-  
-    if (!Array.isArray(branches)) {
-      console.error("GitHub API returned error:", branches);
-      return;
+// Add to your existing JS file, near your other loaders
+async function loadBranchActivity(index) {
+  const box = config.boxes[index];
+  const headers = box.token ? { Authorization: `token ${box.token}` } : {};
+  const url = `https://api.github.com/repos/${box.repo}/branches?per_page=100`;
+
+  const response = await fetch(url, { headers });
+  const branches = await response.json();
+  if (!Array.isArray(branches)) {
+    console.error("Unexpected branch list response:", branches);
+    return;
+  }
+
+  const staleThreshold = new Date();
+  staleThreshold.setDate(staleThreshold.getDate() - 30);
+
+  let activeCount = 0;
+  let staleCount = 0;
+  const branchDetails = [];
+
+  for (const branch of branches) {
+    const branchResp = await fetch(branch.commit.url, { headers });
+    const branchData = await branchResp.json();
+
+    const commitDate = new Date(branchData.commit.committer.date);
+    const isStale = commitDate < staleThreshold;
+
+    if (isStale) staleCount++;
+    else activeCount++;
+
+    // PR Status lookup
+    const prUrl = `https://api.github.com/repos/${box.repo}/pulls?head=${box.repo.split("/")[0]}:${branch.name}`;
+    const prResp = await fetch(prUrl, { headers });
+    const prData = await prResp.json();
+    let prStatus = "None";
+    if (Array.isArray(prData) && prData.length > 0) {
+      prStatus = prData[0].state === "open" ? "Open" : "Merged";
     }
-  
-    const now = new Date();
-    const THIRTY_DAYS = 1000 * 60 * 60 * 24 * 30;
-  
-    let active = 0;
-    let inactive = 0;
-  
-    for (const branch of branches) {
-      try {
-        const commitUrl = branch.commit.url;
-        const commitResp = await fetch(commitUrl, { headers });
-        const commitData = await commitResp.json();
-  
-        const commitDate = new Date(commitData.commit.author.date);
-        const age = now - commitDate;
-  
-        if (age <= THIRTY_DAYS) active++;
-        else inactive++;
-      } catch (e) {
-        console.warn(`Error fetching commit for branch ${branch.name}:`, e);
-      }
-    }
-  
-    const canvasId = `chart_${index}`;
-    if (charts[canvasId]) charts[canvasId].destroy();
-  
-    charts[canvasId] = new Chart(document.getElementById(canvasId), {
-      type: box.graph,
-      data: {
-        labels: ["Active (<30d)", "Inactive (>30d)"],
-        datasets: [{
-          label: 'Branches',
-          data: [active, inactive],
-          backgroundColor: ['#34d399', '#f87171'], // green, red
-          borderColor: ['#059669', '#dc2626'],
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        scales: {
-          y: {
-            beginAtZero: true,
-            title: { display: true, text: "Branch Count" }
-          }
-        }
-      }
+
+    // Compare to main branch
+    const compareUrl = `https://api.github.com/repos/${box.repo}/compare/main...${branch.name}`;
+    const compareResp = await fetch(compareUrl, { headers });
+    const compareData = await compareResp.json();
+
+    branchDetails.push({
+      name: branch.name,
+      lastCommit: commitDate.toISOString().split("T")[0],
+      prStatus,
+      ahead: compareData.ahead_by || 0,
+      behind: compareData.behind_by || 0,
+      author: branchData.commit.committer.name
     });
   }
+
+  const canvasId = `chart_${index}`;
+  if (charts[canvasId]) charts[canvasId].destroy();
+
+  charts[canvasId] = new Chart(document.getElementById(canvasId), {
+    type: box.graph || "bar",
+    data: {
+      labels: ["Active", "Stale"],
+      datasets: [{
+        label: "Branches",
+        data: [activeCount, staleCount],
+        backgroundColor: ["#34d399", "#f87171"]
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        y: { beginAtZero: true }
+      }
+    }
+  });
+
+  // Inject detail table
+  const card = dashboard.children[index];
+  let detailsEl = card.querySelector(".branch-details");
+  if (!detailsEl) {
+    detailsEl = document.createElement("div");
+    detailsEl.className = "branch-details mt-4 text-sm overflow-x-auto text-white";
+    card.appendChild(detailsEl);
+  }
+
+  detailsEl.innerHTML = `
+  <details class="mt-2">
+    <summary class="cursor-pointer text-purple-400 hover:underline mb-2">🔍 View Details</summary>
+    <div class="overflow-x-auto max-w-full mt-2">
+      <table class="min-w-[600px] text-left text-sm border border-gray-700">
+        <thead>
+          <tr class="bg-gray-700">
+            <th class="p-2">Branch</th>
+            <th class="p-2">Last Commit</th>
+            <th class="p-2">PR Status</th>
+            <th class="p-2">Ahead/Behind</th>
+            <th class="p-2">Author</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${branchDetails.map(b => `
+            <tr class="border-t border-gray-600">
+              <td class="p-2">${b.name}</td>
+              <td class="p-2">${b.lastCommit}</td>
+              <td class="p-2">${b.prStatus}</td>
+              <td class="p-2">+${b.ahead} / -${b.behind}</td>
+              <td class="p-2">${b.author}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  </details>
+`;
+
+}
+
+
   
   async function loadLocChange(index) {
     const box = config.boxes[index];
